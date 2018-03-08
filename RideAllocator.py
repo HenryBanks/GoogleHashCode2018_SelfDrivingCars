@@ -62,6 +62,8 @@ def run_simulation(parameters, data):
                     #print ('Removing %s from %s' % (r_select, unallocated_rides))
                     unallocated_rides.remove(r_select) #Remove ride from list of unallocated rides
                     tracker[v-1] = [t+d_total_select, data.at[r_select, 'x2'], data.at[r_select, 'y2']] #Record new location of vehicle
+    print ('Datafile: %s' % (files[sys.argv[1]]))
+    print ('Parameters: %s' % (parameters))
     print ('# of missed rides: %s' % len(unallocated_rides))
     loss = 0
     loss_bonus = 0
@@ -118,15 +120,13 @@ data_headers = ['x1', 'y1', 'x2', 'y2', 't1', 't2']
     x2 = row of the finishing intersection
     y2 = column of the finishing intersection
     t1 = the earliest start for the ride
-    t2 = number of steps in the simulation '''
+    t2 = the latest end for the ride '''
 
 ### 2. IMPORTING & PARSING SIMULATION DATA
 
 data = pd.read_csv(files[sys.argv[1]], delim_whitespace = True)
 parameters = extract_parameters(parameter_keys, data)
 data.columns = data_headers
-print ('Datafile: %s' % (files[sys.argv[1]]))
-print ('Parameters: %s' % (parameters))
 
 ### 3. DATA CLEANING, CHECKS & PREP
 
