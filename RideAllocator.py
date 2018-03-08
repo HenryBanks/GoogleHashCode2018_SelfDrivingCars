@@ -32,6 +32,7 @@ def build_vehicle_tracker():
     return tracker
 
 def run_simulation(parameters, data):
+    #print('Simulation started...')
     for t in range(1,parameters['T']-1):
         print ('%s of %s' % (t, parameters['T'])) #Show progress in console
         for v in range(1, parameters['F'] + 1):
@@ -44,6 +45,8 @@ def run_simulation(parameters, data):
                     dt = delta_t(tracker[v-1][0], data.at[r, 't1']) #Calculate temporal transfer cost
                     d_trans = max(ds, dt) #Calculate transfer time
                     d_total = d_trans + data.at[r, 'd'] #Calculate total transfer and ride completion time
+                    if t+d_total > data.at[r, 't2']: #Skip to next loop if ride won't finish on time
+                        continue
                     if d_trans == dt: #Check if the vehicle will arrive for the ride in time for the ideal ride start time
                         p = data.at[r, 'd+b'] #Include bonus points in score
                     else:
@@ -53,10 +56,20 @@ def run_simulation(parameters, data):
                         pd_max = pd #Store value for comparison in future loops through rides
                         r_select = r #Store ride ID
                         d_total_select = d_total #Store ride time to completion to avoid recalculation later
-                results[v-1].append(r_select) #Record allocation in results
-                #print ('Ride number %s allocated to vehicle %s' % (r_select, v))
-                unallocated_rides.remove(r_select) #Remove ride from list of unallocated rides
-                tracker[v-1] = [t+d_total_select, data.at[r_select, 'x2'], data.at[r_select, 'y2']] #Record new location of vehicle
+                if r_select != None:
+                    results[v-1].append(r_select) #Record allocation in results
+                    #print ('Ride number %s allocated to vehicle %s' % (r_select, v))
+                    #print ('Removing %s from %s' % (r_select, unallocated_rides))
+                    unallocated_rides.remove(r_select) #Remove ride from list of unallocated rides
+                    tracker[v-1] = [t+d_total_select, data.at[r_select, 'x2'], data.at[r_select, 'y2']] #Record new location of vehicle
+    print ('# of missed rides: %s' % len(unallocated_rides))
+    loss = 0
+    loss_bonus = 0
+    for r in unallocated_rides:
+        loss += data.at[r, 'd']
+        loss_bonus += data.at[r, 'd+b']
+    print ('Lost points (excl. bonus): %s, %s' % (loss, loss_bonus))
+    print ('Lost points (incl. bonus): %s' % loss_bonus)
 
 def delta_s(x1, y1, x2, y2): #Difference in spatial displacement
     return abs(x2-x1) + abs(y2-y1)
