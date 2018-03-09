@@ -1,150 +1,215 @@
 import numpy as np
 import pandas as pd
+from pytictoc import TicToc
 import scipy, math, sys
 
-### 0. METHODS
+### 1. CLASSES
 
-def extract_parameters(keys, df):
-    parameters = {}
-    for i in range(len(keys)):
-        parameters[keys[i]] = round(float(df.columns[i]))
-    return parameters
+class SimulationGreedy:
 
-def remove_invalid_rides(data):
-    data['valid?'] = data.apply(lambda row: row['dt'] <= row['dt_window'], axis = 1)
-    len_before = len(data)
-    data = data.loc[data['valid?']]
-    len_after = len(data)
-    print ('%s rides were invalid/impossible and have been removed.' % (len_before - len_after))
-    data.drop(columns = 'valid?')
-    return data
+    ## a. Class variables
 
-def build_results():
-    results = []
-    for i in range(1, parameters['F'] + 1):
-        results.append([])
-    return results
+    ## b. Constructor
 
-def build_vehicle_tracker():
-    tracker = []
-    for i in range(parameters['F']):
-        tracker.append([1,0,0]) #Corresponding to t, x, y of next availability
-    return tracker
+    def __init__(self, orderbook):
+        self.name = orderbook.name
+        self.rides = orderbook.data
+        self.parameters = orderbook.parameters
+        self.rides_matrix = self.rides.values
+        self.rides_unalloc = [i for i in self.rides.index]
+        self.vehicles = self.create_vehicles()
+        self.status = 'Ready'
+        self.score = 0
+        self.score_max = (self.rides['d_ride'].sum(), self.rides['b_ride'].sum())
+        #self.performance = None
+        #self.runTime = None
 
-def run_simulation(parameters, data):
-    #print('Simulation started...')
-    for t in range(1,parameters['T']-1):
-        print ('%s of %s' % (t, parameters['T'])) #Show progress in console
-        for v in range(1, parameters['F'] + 1):
-            if tracker[v-1][0] == t and len(unallocated_rides) > 0: #Test if vehicle is available for a ride
-                pd_max = 0 #Keep track of best p/d ratio
-                r_select = None #Keep track of ride ID with pd_max
-                d_total_select = None #Keep track of transfer and ride completion time
-                for r in unallocated_rides: # <<<< Efficiency and journey-end opportunities
-                    ds = delta_s(tracker[v-1][1], tracker[v-1][2], data.at[r, 'x1'], data.at[r, 'y1']) #Calculate spatial transfer cost
-                    dt = delta_t(tracker[v-1][0], data.at[r, 't1']) #Calculate temporal transfer cost
-                    d_trans = max(ds, dt) #Calculate transfer time
-                    d_total = d_trans + data.at[r, 'd'] #Calculate total transfer and ride completion time
-                    if t+d_total > data.at[r, 't2']: #Skip to next loop if ride won't finish on time
-                        continue
-                    if d_trans == dt: #Check if the vehicle will arrive for the ride in time for the ideal ride start time
-                        p = data.at[r, 'd+b'] #Include bonus points in score
-                    else:
-                        p = data.at[r, 'd'] #Exclude bonus points in score
-                    pd = p/d_total #Calculate points per time unit, a measure of the value of the ride
-                    if pd > pd_max: #Check to see if ride r is the most valuable yet
-                        pd_max = pd #Store value for comparison in future loops through rides
-                        r_select = r #Store ride ID
-                        d_total_select = d_total #Store ride time to completion to avoid recalculation later
-                if r_select != None:
-                    results[v-1].append(r_select) #Record allocation in results
-                    #print ('Ride number %s allocated to vehicle %s' % (r_select, v))
-                    #print ('Removing %s from %s' % (r_select, unallocated_rides))
-                    unallocated_rides.remove(r_select) #Remove ride from list of unallocated rides
-                    tracker[v-1] = [t+d_total_select, data.at[r_select, 'x2'], data.at[r_select, 'y2']] #Record new location of vehicle
-    print ('Datafile: %s' % (files[sys.argv[1]]))
-    print ('Parameters: %s' % (parameters))
-    print ('# of missed rides: %s' % len(unallocated_rides))
-    loss = 0
-    loss_bonus = 0
-    for r in unallocated_rides:
-        loss += data.at[r, 'd']
-        loss_bonus += data.at[r, 'd+b']
-    print ('Lost points (excl. bonus): %s, %s' % (loss, loss_bonus))
-    print ('Lost points (incl. bonus): %s' % loss_bonus)
+    ## c. Instance methods
 
-def delta_s(x1, y1, x2, y2): #Difference in spatial displacement
-    return abs(x2-x1) + abs(y2-y1)
+    def create_vehicles(self):
+        vehicles = []
+        for v in range(self.parameters['Fleet']):
+            vehicles.append(Vehicle(v)) #Corresponding to t, x, y of next availability
+        return vehicles
 
-def delta_t(t1, t2):
-    return t2-t1
+    def run_simulation(self):
+        print ('Simulation started...')
+        timer = TicToc()
+        timer.tic()
+        for t in range(1, self.parameters['Timeslots']):
+            print ('.', end = '')
+            for v in range(self.parameters['Fleet']):
+                if self.vehicles[v].available == t and len(self.rides_unalloc) > 0:
+                    p_ratio_max = 0
+                    r_select = None
+                    p_select = 0
+                    d_trans_ride_select = None
+                    for r in self.rides_unalloc:
+                        d_trans_s = abs(self.rides_matrix[r][0]-self.vehicles[v].x) + abs(self.rides_matrix[r][1]-self.vehicles[v].y)
+                        d_trans_t = self.rides_matrix[r][4] - self.vehicles[v].available
+                        d_trans = max(d_trans_s, d_trans_t)
+                        d_ride = self.rides_matrix[r][7]
+                        d_trans_ride = d_trans + d_ride
+                        if t + d_trans_ride > self.rides_matrix[r][5]:
+                            continue
+                        if d_trans != d_trans_t:
+                            p = d_ride
+                        else:
+                            p = self.rides_matrix[r][8]
+                        p_ratio = p/d_trans_ride
+                        if p_ratio > p_ratio_max:
+                            p_ratio_max = 0
+                            r_select = r
+                            p_select = p
+                            d_trans_ride_select = d_trans_ride
+                    if r_select != None:
+                        self.vehicles[v].allocate_ride(r_select)
+                        self.rides_unalloc.remove(r_select)
+                        self.vehicles[v].update_availability(d_trans_ride_select)
+                        self.score += p_select
+        print ()
+        timer.toc('Simulation completed in')
+        #self.performance = (round(100 * (self.score / self.score_max[0])) + "%%", round(100 * (self.score / self.score_max[1])) + "%%")
+        self.status = 'Complete'
+        
 
-def print_output(results):
-    #output = pd.DataFrame(results, dtype = int)
-    output_name = files[sys.argv[1]][:-3] + '.out'
-    output = open(output_name, 'w+')
-    for v in range(1, parameters['F'] + 1):
-        results_string = list(map(lambda x: str(x), results[v-1]))
-        output.write(str(len(results_string)) + ' ' + ' '.join(results_string) + '\n')
-    #output.to_csv(output_name, index = False, header = False, sep = ' ')
-    #print ('The results as list of lists: %s' % (results))
-    #print ('The results as dataframe: %s' % (output))
+    def print_simulation_report(self):
+        print ()
+        print ('** SIMULATION REPORT **')
+        print ()
+        print ('Name: %s' % self.name)
+        print ('Parameters: %s' % self.parameters)
+        print ('Status: %s' % self.status)
+        print ()
+        #if self.runTime != None:
+            #print (self.runTime)
+        print ('Unallocated rides: %s' % len(self.rides_unalloc))
+        print ('Score: %s' % self.score)
+        print ('Max scores (excl./incl. bonus): (%s/%s)' % (self.score_max[0], self.score_max[1]))
+        #if self.performance != None:
+            #print ('Performance: %s' % self.performance)
+        print ()
+
+        self.score = None
+        self.score_max = (self.rides['d_ride'].sum(), self.rides['b_ride'].sum())
+        self.performance = None
+
+    def output_results(self):
+        if self.status == 'Complete':
+            output_name = self.name[:-3] + '.out'
+            output = open(output_name, 'w+')
+            for v in self.vehicles:
+                results_string = list(map(lambda x: str(x), v.rides_alloc))
+                output.write(str(v.get_ride_count()) + ' ' + ' '.join(results_string) + '\n')
+        else:
+            print ('Simulation %s has not yet been run!' % self.name)
+
+class Vehicle:
+
+    ## a. Class variables
+
+    ## b. Constructor
+
+    def __init__(self, name):
+        self.name = name
+        self.x = 0
+        self.y = 0
+        self.available = 1
+        self.rides_alloc = []
+
+    ## c. Instance methods
+
+    def get_ride_count(self):
+        return len(self.rides_alloc)
+
+    def allocate_ride(self, ride):
+        self.rides_alloc.append(ride)
+
+    def update_availability(self, time):
+        self.available += time
+
+class RideOrderBook:
+
+    ## a. Class variables
+
+    files = {'a': 'a_example.in',
+            'b': 'b_should_be_easy.in',
+            'c': 'c_no_hurry.in',
+            'd': 'd_metropolis.in',
+            'e': 'e_high_bonus.in'}
+
+    parameterKeys = ['Rows', 'Columns', 'Fleet', 'Rides', 'Bonus', 'Timeslots']
+    ''' Where:
+        Rows = number of rows in the grid
+        Columns = number of columns in the grid
+        Fleet = number of vehicles in the fleet
+        Rides = number of rides
+        Bonus = per-ride bonus for starting the ride on time
+        Timeslots = number of steps in the simulation '''
+        
+    dataHeaders = ['x1', 'y1', 'x2', 'y2', 't1', 't2']
+    ''' Where:
+        x1 = row of the starting intersection
+        y1 = column of the starting intersection
+        x2 = row of the finishing intersection
+        y2 = column of the finishing intersection
+        t1 = the earliest start for the ride
+        t2 = the latest end for the ride '''
+
+    ## b. Constructor
+
+    def __init__(self, fileKey):
+        self.name = self.files[fileKey]
+        self.data = self.load_dataframe(self.files[fileKey])
+        self.parameters = self.extract_parameters(self.parameterKeys, self.data)
+        self.data.columns = self.dataHeaders
+        self.run_preparatory_calculations()
+
+    ## c. Instance methods
+
+    def load_dataframe(self, filename):
+        df = pd.read_csv(filename, delim_whitespace = True)
+        return df
+
+    def extract_parameters(self, keys, dataframe):
+        parameters = {}
+        for i in range(len(keys)):
+            parameters[keys[i]] = round(float(dataframe.columns[i]))
+        return parameters
+
+    def run_preparatory_calculations(self):
+        self.data['t_window'] = self.data.apply(lambda row: row['t2']-row['t1'], axis = 1)
+        self.data['d_ride'] = self.data.apply(lambda row: abs(row['x2']-row['x1']) + abs(row['y2']-row['y1']), axis = 1)
+        self.data['b_ride'] = self.data.apply(lambda row: row['d_ride'] + self.parameters['Bonus'], axis = 1)
+
+    def remove_invalid_rides(self):
+        self.data['valid?'] = self.data.apply(lambda row: row['d_ride'] <= row['t_window'], axis = 1)
+        self.data = self.data.loc[self.data['valid?']]
+        self.data.drop(columns = 'valid?')
+
+###########################################################################################################################
+###########################################################################################################################
+
+def main():
+
+    #Load data and simulation
+    simulationData = RideOrderBook(sys.argv[1])
+    simulation = SimulationGreedy(simulationData)
+
+    #Run simulation or view simulation summary
+    if sys.argv[2] == 'run':
+        simulation.run_simulation()
+        simulation.output_results()
+        simulation.print_simulation_report()
+    elif sys.argv[2] == 'view':
+        simulation.print_simulation_report()
+    else:
+        print ('System argument error!')
+
+main()
 
     
-    #fout=open(sys.argv[1][:-3]+".out",'w+')
 
-		#for veh in self.vehicleList:
-			#fout.write(veh.printRides())
+    ### 6. SAVE OUTPUT
 
-### 1. DEFINITIONS
-
-files = {'a': 'a_example.in',
-    'b': 'b_should_be_easy.in',
-    'c': 'c_no_hurry.in',
-    'd': 'd_metropolis.in',
-    'e': 'e_high_bonus.in'}
-
-parameter_keys = ['R', 'C', 'F', 'N', 'B', 'T']
-''' Where:
-    R = number of rows in the grid
-    C = number of columns in the grid
-    F = number of vehicles in the fleet
-    N = number of rides
-    B = per-ride bonus for starting the ride on time
-    T = number of steps in the simulation '''
-
-data_headers = ['x1', 'y1', 'x2', 'y2', 't1', 't2']
-''' Where:
-    x1 = row of the starting intersection
-    y1 = column of the starting intersection
-    x2 = row of the finishing intersection
-    y2 = column of the finishing intersection
-    t1 = the earliest start for the ride
-    t2 = the latest end for the ride '''
-
-### 2. IMPORTING & PARSING SIMULATION DATA
-
-data = pd.read_csv(files[sys.argv[1]], delim_whitespace = True)
-parameters = extract_parameters(parameter_keys, data)
-data.columns = data_headers
-
-### 3. DATA CLEANING, CHECKS & PREP
-
-data['d_window'] = data.apply(lambda row: row['t2']-row['t1'], axis = 1)
-data['d'] = data.apply(lambda row: abs(row['x2']-row['x1']) + abs(row['y2']-row['y1']), axis = 1)
-data['d+b'] = data.apply(lambda row: row['d'] + parameters['B'], axis = 1)
-#data = remove_invalid_rides(data) - all data sources checked and all rides proved valid
-
-### 4. OTHER SIMULATION PREP
-
-results = build_results()
-unallocated_rides = [i for i in data.index]
-tracker = build_vehicle_tracker()
-
-### 5. RUN SIMULATION
-
-run_simulation(parameters, data)
-
-### 6. SAVE OUTPUT
-
-print_output(results)
+    #print_output(results)
