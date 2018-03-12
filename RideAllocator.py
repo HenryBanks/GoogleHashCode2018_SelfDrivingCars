@@ -2,10 +2,9 @@ import numpy as np
 import pandas as pd
 from pytictoc import TicToc
 import scipy, math, sys
+import matplotlib.pyplot as plt
 
-### 1. CLASSES
-
-class SimulationGreedy:
+class Simulation:
 
     ## a. Class variables
 
@@ -15,13 +14,14 @@ class SimulationGreedy:
         self.name = orderbook.name
         self.rides = orderbook.data
         self.parameters = orderbook.parameters
-        self.rides_matrix = self.rides.values
+        self.rides_matrix = self.rides.values.astype(int)
         self.rides_unalloc = self.create_rides()
         self.vehicles = self.create_vehicles()
         self.status = 'Ready'
         self.score = 0
-        self.score_max = (self.rides['d_ride'].sum(), self.rides['b_ride'].sum())
-        self.performance = ('{0:.0f}%'.format(0.0), '{0:.0f}%'.format(0.0))
+        sumScore = self.rides['d_ride'].sum()
+        self.score_max = (sumScore, sumScore + (self.parameters['Rides']*self.parameters['Bonus']))
+        self.performance = ('{0:.1f}%'.format(0.0), '{0:.1f}%'.format(0.0))
         #self.runTime = None
 
     ## c. Instance methods
@@ -38,44 +38,74 @@ class SimulationGreedy:
             rides.append(Ride(r, self.rides_matrix[r]))
         return rides
 
-    def run_simulation(self):
+    def run_simulation_best_next_steps(self):
         print ('Simulation started...')
         timer = TicToc()
         timer.tic()
         for t in range(1, self.parameters['Timeslots']):
             #print ('.', end = '')
-            #print ('t = %s of %s' % (t, self.parameters['Timeslots']))
+            print ('t = %s of %s' % (t, self.parameters['Timeslots']))
             for v in self.vehicles:
                 if v.available != t:
                     continue
-                if len(self.rides_unalloc) == None:
+                #print ('Available vehicles found')
+                if len(self.rides_unalloc) == 0:
                     break
-                #if v.available == t and len(self.rides_unalloc) > 0:
                 #print ('- Vehicle %s is available at (%s,%s)' % (v.name, v.x, v.y))
                 p_ratio_max = 0
                 r_select = None
                 p_select = 0
-                d_trans_ride_select = None
+                d_trans_ride_select = 0
                 for r in self.rides_unalloc:
                     d_trans_s = abs(r.x1-v.x) + abs(r.y1-v.y)
-                    d_trans_t = r.t1 - t
+                    if (t + d_trans_s) > r.t1_late:
+                        #print ('Ride %s not possible to complete. Arrival would be %s and latest start is %s' % (r.name, t+d_trans_s, r.t1_late))
+                        continue
+                    d_trans_t = r.t1_early - t
                     d_trans = max(d_trans_s, d_trans_t)
                     d_trans_ride = d_trans + r.d_ride
-                    if t + d_trans_ride > r.t2:
-                        continue
+                    #print ('Total transfer and ride distance: %s' % (d_trans_ride))
                     if d_trans == d_trans_t:
-                        p = r.b_ride
+                        p = r.d_ride + self.parameters['Bonus']
                     else:
                         p = r.d_ride
-                    p_ratio = p/d_trans_ride
-                    #print ('  - Ride %s earns %s points and lasts %s units until time %s, with ratio %s' % (r.name, p, d_trans_ride, t + d_trans_ride, p_ratio))
+                    #Prep and begin ride2 consideration
+                    p_ratio_max2 = 0
+                    #r_select2 = None
+                    p_select2 = 0
+                    d_trans_ride_select2 = 0
+                    if len(self.rides_unalloc) > 1:
+                        t2 = t + d_trans_ride
+                        for r2 in self.rides_unalloc:
+                            d_trans_s2 = abs(r2.x1-r.x2) + abs(r2.y1-r.y2)
+                            if t2 + d_trans_s2 > r2.t1_late:
+                                continue
+                            d_trans_t2 = r2.t1_early - t2
+                            d_trans2 = max(d_trans_s2, d_trans_t2)
+                            d_trans_ride2 = d_trans2 + r2.d_ride
+                            if d_trans2 == d_trans_t2:
+                                p2 = r2.d_ride + self.parameters['Bonus']
+                            else:
+                                p2 = r2.d_ride
+                            p_ratio2 = (p + p2)/(d_trans_ride + d_trans_ride2)
+                            #print ('    - Ride %s and %s ratio = %s' % (r.name, r2.name, p_ratio2))
+                            if p_ratio2 > p_ratio_max2 and r != r2:
+                                p_ratio_max2 = p_ratio2
+                                #r_select2 = r2
+                                p_select2 = p2
+                                d_trans_ride_select2 = d_trans_ride2
+                    p_ratio = (p + p_select2)/(d_trans_ride + d_trans_ride_select2)
+                    #if r_select2 != None:
+                        #print ('  - Ride pairing of %s, then %s, has ratio %s' % (r.name, r_select2.name, p_ratio))
+                    #else:
+                        #print ('  - Ride %s had no pairings, with ratio %s' % (r.name, p_ratio))
                     if p_ratio > p_ratio_max:
                         p_ratio_max = p_ratio
                         r_select = r
                         p_select = p
                         d_trans_ride_select = d_trans_ride
                 if r_select != None:
-                    #print ('    - Ride %s allocated to vehicle %s' % (r_select.name, v.name))
+                    #print ('    - Ride %s allocated to vehicle %s with time %s' % (r_select.name, v.name, d_trans_ride_select))
                     v.allocate_ride(r_select, d_trans_ride_select)
                     self.rides_unalloc.remove(r_select)
                     self.score += p_select
@@ -84,9 +114,12 @@ class SimulationGreedy:
                 break
         print ()
         timer.toc('Simulation completed in')
-        self.performance = ('{0:.0f}%'.format(100 * (self.score / self.score_max[0])), '{0:.0f}%'.format(100 * (self.score / self.score_max[1])))
+        self.performance = ('{0:.1f}%'.format(100 * (self.score / self.score_max[0])), '{0:.1f}%'.format(100 * (self.score / self.score_max[1])))
         self.status = 'Complete'
-        
+
+    def run_simulation_dijkstra(self):
+        pass
+    
     def print_simulation_report(self):
         print ()
         print ('** SIMULATION REPORT **')
@@ -131,11 +164,11 @@ class Ride:
         self.y1 = rideDetails[1]
         self.x2 = rideDetails[2]
         self.y2 = rideDetails[3]
-        self.t1 = rideDetails[4]
-        self.t2 = rideDetails[5]
-        self.t_window = rideDetails[6]
-        self.d_ride = rideDetails[7]
-        self.b_ride = rideDetails[8]
+        self.t1_early = rideDetails[4]
+        self.t2_late = rideDetails[5]
+        self.d_ride = rideDetails[6]
+        self.t1_late = rideDetails[7]
+        self.t2_early = rideDetails[8]
 
     ## C. Instance methods
 
@@ -145,11 +178,11 @@ class Ride:
                     'y1': self.y1,
                     'x2': self.x2,
                     'y2': self.y2,
-                    't1': self.t1,
-                    't2': self.t2,
-                    't_window': self.t_window,
+                    't1_early': self.t1_early,
+                    't2_late': self.t2_late,
                     'd_ride': self.d_ride,
-                    'b_ride': self.b_ride}
+                    't1_late': self.t1_late,
+                    't2_early': self.t2_early}
         print (printOut)
 
 class Vehicle:
@@ -195,7 +228,7 @@ class RideOrderBook:
         Bonus = per-ride bonus for starting the ride on time
         Timeslots = number of steps in the simulation '''
         
-    dataHeaders = ['x1', 'y1', 'x2', 'y2', 't1', 't2']
+    dataHeaders = ['x1', 'y1', 'x2', 'y2', 't1_early', 't2_late']
     ''' Where:
         x1 = row of the starting intersection
         y1 = column of the starting intersection
@@ -226,27 +259,28 @@ class RideOrderBook:
         return parameters
 
     def run_preparatory_calculations(self):
-        self.data['t_window'] = self.data.apply(lambda row: row['t2']-row['t1'], axis = 1)
         self.data['d_ride'] = self.data.apply(lambda row: abs(row['x2']-row['x1']) + abs(row['y2']-row['y1']), axis = 1)
-        self.data['b_ride'] = self.data.apply(lambda row: row['d_ride'] + self.parameters['Bonus'], axis = 1)
+        self.data['t1_late'] = self.data.apply(lambda row: row['t2_late']-row['d_ride'], axis = 1)
+        self.data['t2_early'] = self.data.apply(lambda row: row['t1_early']+row['d_ride'], axis = 1)
 
     def remove_invalid_rides(self):
         self.data['valid?'] = self.data.apply(lambda row: row['d_ride'] <= row['t_window'], axis = 1)
         self.data = self.data.loc[self.data['valid?']]
         self.data.drop(columns = 'valid?')
 
-###########################################################################################################################
-###########################################################################################################################
+    def plot_distribution(self):
+        plt.figure()
+        self.data['d_ride'].plot.hist()
 
 def main():
 
     #Load data and simulation
     simulationData = RideOrderBook(sys.argv[1])
-    simulation = SimulationGreedy(simulationData)
+    simulation = Simulation(simulationData)
 
     #Run simulation or view simulation summary
     if sys.argv[2] == 'run':
-        simulation.run_simulation()
+        simulation.run_simulation_best_next_steps()
         simulation.output_results()
         simulation.print_simulation_report()
     elif sys.argv[2] == 'prelim':
@@ -254,7 +288,9 @@ def main():
     elif sys.argv[2] == 'view':
         simulation.print_rides()
         simulation.print_rides_as_array()
+    elif sys.argv[2] == 'distribution':
+        simulationData.plot_distribution()
     else:
         print ('System argument error!')
 
-main()
+#main()
